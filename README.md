@@ -4,8 +4,7 @@
 
 It was created for large flows where a basic text search is not enough — especially when a value such as `810` must be found as an exact number rather than as part of `1810` or `8100`.
 
-<img width="272" height="634" alt="Search" src="https://github.com/user-attachments/assets/609f0897-9976-4b34-9a87-a5208124f25b" />
-
+<img width="277" height="860" alt="Search" src="https://github.com/user-attachments/assets/199009ce-903b-449a-b8c0-235512515ac0" />
 
 ## Features
 
