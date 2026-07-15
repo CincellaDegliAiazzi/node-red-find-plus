@@ -1,0 +1,1303 @@
+<script type="text/javascript">
+(function() {
+    "use strict";
+
+    const pluginId = "advanced-search";
+    const tabId = "advanced-search";
+    const actionName = "advanced-search:show";
+    const maxNodeResults = 500;
+    const maxMatchesPerNode = 8;
+    const maxMatchesPerProperty = 4;
+    const blockCoreSearchHoverStorageKey = "node-red-advanced-search.block-core-search-hover";
+
+    let ui = null;
+    let blockCoreSearchHover = true;
+
+    function escapeRegExp(value) {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function loadBlockCoreSearchHover() {
+        try {
+            const saved = window.localStorage.getItem(blockCoreSearchHoverStorageKey);
+            return saved === null ? true : saved == "true";
+        } catch (error) {
+            return true;
+        }
+    }
+
+    function saveBlockCoreSearchHover() {
+        try {
+            window.localStorage.setItem(blockCoreSearchHoverStorageKey, String(blockCoreSearchHover));
+        } catch (error) {
+            console.warn("[Advanced Search] Unable to save the core search hover preference", error);
+        }
+    }
+
+    function stopCoreSearchAutoReveal(event) {
+        if (!blockCoreSearchHover) {
+            return;
+        }
+
+        let target = event.target;
+        if (target && target.nodeType != 1) {
+            target = target.parentElement;
+        }
+        if (!target || typeof target.closest != "function") {
+            return;
+        }
+
+        const result = target.closest("#red-ui-search .red-ui-search-result");
+        if (!result) {
+            return;
+        }
+
+        // Only intercept actual node results. History, “more results” entries,
+        // and empty-state messages keep their normal behaviour.
+        if (!result.querySelector(".red-ui-search-result-node-description")) {
+            return;
+        }
+
+        // Node-RED 5 already removed hover reveal and adds a result tools container.
+        // In that case the plug-in does not interfere.
+        if (result.querySelector(".red-ui-search-result-tools")) {
+            return;
+        }
+
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+    }
+
+    function installCoreSearchHoverGuard() {
+        document.removeEventListener("mouseover", stopCoreSearchAutoReveal, true);
+        document.addEventListener("mouseover", stopCoreSearchAutoReveal, true);
+    }
+
+    function removeCoreSearchHoverGuard() {
+        document.removeEventListener("mouseover", stopCoreSearchAutoReveal, true);
+    }
+
+    function unquote(value) {
+        if (value.length >= 2 && value[0] == '"' && value[value.length - 1] == '"') {
+            return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+        }
+        return value;
+    }
+
+    function tokenize(value) {
+        return value.match(/(?:[^\s"]+:"(?:\\.|[^"])*"|"(?:\\.|[^"])*"|\S+)/g) || [];
+    }
+
+    function parseQuery(rawQuery) {
+        const options = {
+            query: "",
+            caseSensitive: ui.caseSensitive.prop("checked"),
+            wholeWord: ui.wholeWord.prop("checked"),
+            regex: ui.regex.prop("checked"),
+            numeric: ui.numeric.prop("checked"),
+            currentFlow: ui.currentFlow.prop("checked"),
+            includeConfig: ui.includeConfig.prop("checked"),
+            nodeType: ui.nodeType.val() || ""
+        };
+
+        const terms = [];
+        const tokens = tokenize(rawQuery.trim());
+
+        tokens.forEach(function(token) {
+            const separator = token.indexOf(":");
+            const prefix = separator > -1 ? token.slice(0, separator).toLowerCase() : "";
+            const suffix = separator > -1 ? unquote(token.slice(separator + 1)) : "";
+
+            switch (prefix) {
+                case "case":
+                    options.caseSensitive = true;
+                    if (suffix) {
+                        terms.push(suffix);
+                    }
+                    break;
+
+                case "word":
+                    options.wholeWord = true;
+                    if (suffix) {
+                        terms.push(suffix);
+                    }
+                    break;
+
+                case "re":
+                    options.regex = true;
+                    options.numeric = false;
+                    if (suffix) {
+                        terms.push(suffix);
+                    }
+                    break;
+
+                case "num":
+                    options.numeric = true;
+                    options.regex = false;
+                    if (suffix) {
+                        terms.push(suffix);
+                    }
+                    break;
+
+                case "type":
+                    options.nodeType = suffix;
+                    break;
+
+                case "flow":
+                    if (suffix.toLowerCase() == "current") {
+                        options.currentFlow = true;
+                    }
+                    break;
+
+                case "config":
+                    if (suffix.toLowerCase() == "yes" || suffix.toLowerCase() == "true") {
+                        options.includeConfig = true;
+                    }
+                    break;
+
+                default:
+                    terms.push(unquote(token));
+                    break;
+            }
+        });
+
+        options.query = terms.join(" ").trim();
+        return options;
+    }
+
+    function createMatcher(options) {
+        if (!options.query) {
+            throw new Error("Enter something to search for.");
+        }
+
+        let source;
+
+        if (options.regex) {
+            source = options.query;
+        } else if (options.numeric) {
+            const numericValue = Number(options.query);
+            if (!Number.isFinite(numericValue)) {
+                throw new Error("Exact-number search requires a valid number.");
+            }
+            source = "(?<![0-9A-Za-z_$])" + escapeRegExp(options.query) + "(?![0-9A-Za-z_$])";
+        } else {
+            source = escapeRegExp(options.query);
+            if (options.wholeWord) {
+                source = "(?<![0-9A-Za-z_$])" + source + "(?![0-9A-Za-z_$])";
+            }
+        }
+
+        let regex;
+        try {
+            regex = new RegExp(source, options.caseSensitive ? "g" : "gi");
+        } catch (error) {
+            throw new Error("Invalid regular expression: " + error.message);
+        }
+
+        return {
+            numericValue: options.numeric ? Number(options.query) : null,
+            regex: regex,
+            numeric: options.numeric
+        };
+    }
+
+    function getLineData(text, index) {
+        const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+        let lineEnd = text.indexOf("\n", index);
+        if (lineEnd == -1) {
+            lineEnd = text.length;
+        }
+
+        const line = text.slice(0, index).split("\n").length;
+        let snippet = text.slice(lineStart, lineEnd).trim();
+        if (snippet.length > 180) {
+            const offset = Math.max(0, index - lineStart - 65);
+            snippet = (offset > 0 ? "…" : "") + snippet.slice(offset, offset + 140) + (snippet.length > offset + 140 ? "…" : "");
+        }
+
+        return { line: line, snippet: snippet };
+    }
+
+    function findMatches(value, path, matcher) {
+        if (matcher.numeric && typeof value == "number") {
+            if (value === matcher.numericValue) {
+                return [{ path: path, line: null, snippet: String(value) }];
+            }
+            return [];
+        }
+
+        if (typeof value != "string" && typeof value != "number" && typeof value != "boolean") {
+            return [];
+        }
+
+        const text = String(value);
+        const matches = [];
+        matcher.regex.lastIndex = 0;
+
+        let match;
+        while ((match = matcher.regex.exec(text)) !== null) {
+            const lineData = getLineData(text, match.index);
+            matches.push({
+                path: path,
+                line: text.includes("\n") ? lineData.line : null,
+                snippet: lineData.snippet || text
+            });
+
+            if (matches.length >= maxMatchesPerProperty) {
+                break;
+            }
+
+            if (match[0] === "") {
+                matcher.regex.lastIndex++;
+            }
+        }
+
+        return matches;
+    }
+
+    function searchValue(value, path, matcher, matches) {
+        if (matches.length >= maxMatchesPerNode || value === null || value === undefined) {
+            return;
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach(function(item, index) {
+                searchValue(item, path + "[" + index + "]", matcher, matches);
+            });
+            return;
+        }
+
+        if (typeof value == "object") {
+            Object.keys(value).forEach(function(key) {
+                if (matches.length >= maxMatchesPerNode) {
+                    return;
+                }
+                searchValue(value[key], path ? path + "." + key : key, matcher, matches);
+            });
+            return;
+        }
+
+        matches.push.apply(matches, findMatches(value, path, matcher));
+    }
+
+    function getSearchData(node) {
+        const data = {
+            id: node.id,
+            type: node.type
+        };
+
+        if (node._def && node._def.defaults) {
+            Object.keys(node._def.defaults).forEach(function(property) {
+                if (property != "credentials") {
+                    data[property] = node[property];
+                }
+            });
+        } else if (node._orig) {
+            Object.keys(node._orig).forEach(function(property) {
+                if (property != "credentials" && property[0] != "_") {
+                    data[property] = node._orig[property];
+                }
+            });
+        }
+
+        ["name", "info", "inputLabels", "outputLabels"].forEach(function(property) {
+            if (node[property] !== undefined && data[property] === undefined) {
+                data[property] = node[property];
+            }
+        });
+
+        return data;
+    }
+
+    function getNodeLabel(node) {
+        try {
+            return RED.utils.getNodeLabel(node, node.type) || node.name || node.type;
+        } catch (error) {
+            return node.name || node.type;
+        }
+    }
+
+    function getFlowLabel(node) {
+        if (!node.z) {
+            return "Configuration nodes";
+        }
+
+        const flow = RED.nodes.workspace(node.z) || RED.nodes.subflow(node.z);
+        if (!flow) {
+            return node.z;
+        }
+        return flow.label || flow.name || flow.id;
+    }
+
+    function collectNodes(includeConfig) {
+        const nodes = [];
+        RED.nodes.eachNode(function(node) {
+            nodes.push(node);
+        });
+
+        if (includeConfig && typeof RED.nodes.eachConfig == "function") {
+            RED.nodes.eachConfig(function(node) {
+                nodes.push(node);
+            });
+        }
+
+        return nodes;
+    }
+
+    function refreshNodeTypes(includeConfig) {
+        const selected = ui.nodeType.val() || "";
+        const types = new Set();
+
+        collectNodes(includeConfig).forEach(function(node) {
+            types.add(node.type);
+        });
+
+        ui.nodeType.empty().append($("<option>", { value: "", text: "All node types" }));
+        Array.from(types).sort(function(a, b) {
+            return a.localeCompare(b);
+        }).forEach(function(type) {
+            ui.nodeType.append($("<option>", { value: type, text: type }));
+        });
+
+        if (types.has(selected)) {
+            ui.nodeType.val(selected);
+        }
+    }
+
+    function performSearch() {
+        const started = performance.now();
+        ui.error.empty().hide();
+        ui.results.empty();
+
+        let options;
+        let matcher;
+        try {
+            options = parseQuery(ui.query.val());
+            matcher = createMatcher(options);
+        } catch (error) {
+            ui.summary.text("No results");
+            ui.error.text(error.message).show();
+            return;
+        }
+
+        refreshNodeTypes(options.includeConfig);
+
+        const activeFlow = typeof RED.workspaces.active == "function" ? RED.workspaces.active() : null;
+        const results = [];
+        let totalMatches = 0;
+        let truncated = false;
+
+        const nodes = collectNodes(options.includeConfig);
+        for (let index = 0; index < nodes.length; index++) {
+            const node = nodes[index];
+
+            if (options.currentFlow && node.z != activeFlow) {
+                continue;
+            }
+            if (options.nodeType && node.type != options.nodeType) {
+                continue;
+            }
+
+            const matches = [];
+            searchValue(getSearchData(node), "", matcher, matches);
+
+            if (matches.length) {
+                results.push({ node: node, matches: matches });
+                totalMatches += matches.length;
+            }
+
+            if (results.length >= maxNodeResults) {
+                truncated = true;
+                break;
+            }
+        }
+
+        renderResults(results);
+
+        const elapsed = Math.round(performance.now() - started);
+        let summary = results.length + (results.length == 1 ? " node" : " nodes") + ", " + totalMatches + (totalMatches == 1 ? " match" : " matches") + " · " + elapsed + " ms";
+        if (truncated) {
+            summary += " · limit of " + maxNodeResults + " nodes reached";
+        }
+        ui.summary.text(summary);
+    }
+
+    function renderResults(results) {
+        if (!results.length) {
+            const empty = $("<div>", { class: "nr-advanced-search-empty" }).appendTo(ui.results);
+            $("<i>", { class: "fa fa-search nr-advanced-search-empty-icon" }).appendTo(empty);
+            $("<div>", { class: "nr-advanced-search-empty-title", text: "No nodes found" }).appendTo(empty);
+            $("<div>", {
+                class: "nr-advanced-search-empty-text",
+                text: "Try changing the query or disabling one of the filters."
+            }).appendTo(empty);
+            return;
+        }
+
+        results.forEach(function(result) {
+            const node = result.node;
+            const card = $("<div>", { class: "nr-advanced-search-result" }).appendTo(ui.results);
+            const header = $("<div>", { class: "nr-advanced-search-result-header" }).appendTo(card);
+            const titleArea = $("<div>", { class: "nr-advanced-search-result-title-area" }).appendTo(header);
+            const titleRow = $("<div>", { class: "nr-advanced-search-result-title-row" }).appendTo(titleArea);
+
+            $("<div>", { class: "nr-advanced-search-result-title", text: getNodeLabel(node) }).appendTo(titleRow);
+            $("<span>", { class: "nr-advanced-search-node-type", text: node.type }).appendTo(titleRow);
+            $("<span>", {
+                class: "nr-advanced-search-match-count",
+                text: result.matches.length
+            }).attr("title", result.matches.length == 1 ? "1 match" : result.matches.length + " matches").appendTo(titleRow);
+
+            const meta = $("<div>", { class: "nr-advanced-search-result-meta" }).appendTo(titleArea);
+            $("<span>", { class: "nr-advanced-search-flow", text: getFlowLabel(node) }).appendTo(meta);
+            $("<span>", { class: "nr-advanced-search-id", text: node.id }).appendTo(meta);
+
+            const revealButton = $("<button>", {
+                class: "red-ui-button red-ui-button-small nr-advanced-search-reveal",
+                type: "button",
+                title: "Reveal il node nel workspace"
+            }).appendTo(header).on("click", function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+                RED.view.reveal(node.id);
+            });
+            $("<i>", { class: "fa fa-crosshairs" }).appendTo(revealButton);
+            $("<span>", { text: "Reveal" }).appendTo(revealButton);
+
+            const matchList = $("<div>", { class: "nr-advanced-search-match-list" }).appendTo(card);
+            result.matches.forEach(function(match) {
+                const row = $("<div>", { class: "nr-advanced-search-match" }).appendTo(matchList);
+                const location = match.path + (match.line ? " · line " + match.line : "");
+                const path = $("<div>", { class: "nr-advanced-search-match-path" }).appendTo(row);
+                $("<i>", { class: "fa fa-code" }).appendTo(path);
+                $("<span>", { text: location }).appendTo(path);
+                $("<pre>", { class: "nr-advanced-search-match-snippet", text: match.snippet }).appendTo(row);
+            });
+
+            card.on("dblclick", function() {
+                RED.view.reveal(node.id);
+            });
+        });
+    }
+
+    function createCheckbox(label, checked, title) {
+        const wrapper = $("<label>", {
+            class: "nr-advanced-search-option",
+            title: title || ""
+        });
+        const input = $("<input>", { type: "checkbox" }).prop("checked", checked).appendTo(wrapper);
+        const text = $("<span>", { class: "nr-advanced-search-option-label" }).appendTo(wrapper);
+        $("<i>", { class: "fa fa-check" }).appendTo(text);
+        $("<span>", { text: label }).appendTo(text);
+        return { wrapper: wrapper, input: input };
+    }
+
+    function createSidebar() {
+        const content = $("<div>", { class: "nr-advanced-search" });
+        const controls = $("<div>", { class: "nr-advanced-search-controls" }).appendTo(content);
+
+        const heading = $("<div>", { class: "nr-advanced-search-heading" }).appendTo(controls);
+        $("<div>", { class: "nr-advanced-search-heading-title", text: "Advanced Search" }).appendTo(heading);
+        $("<div>", {
+            class: "nr-advanced-search-heading-text",
+            text: "Search node properties and Function code"
+        }).appendTo(heading);
+
+        const searchBlock = $("<div>", { class: "nr-advanced-search-search-block" }).appendTo(controls);
+        const query = $("<input>", {
+            class: "nr-advanced-search-query",
+            type: "text",
+            placeholder: "Testo, num:810, case:Echo, re:..."
+        })
+            .attr("autocomplete", "off")
+            .attr("spellcheck", "false")
+            .appendTo(searchBlock);
+
+        const searchActions = $("<div>", { class: "nr-advanced-search-search-actions" }).appendTo(searchBlock);
+        const searchButton = $("<button>", {
+            class: "nr-advanced-search-search-button",
+            type: "button",
+            title: "Search",
+            "aria-label": "Search"
+        }).appendTo(searchActions);
+        searchButton.html(
+            '<svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+                '<circle cx="8.2" cy="8.2" r="5.2" />' +
+                '<path d="M12.1 12.1l4.4 4.4" />' +
+            '</svg>'
+        );
+
+        const clearQueryButton = $("<button>", {
+            class: "nr-advanced-search-clear-query",
+            type: "button",
+            title: "Clear query",
+            "aria-label": "Clear query"
+        }).appendTo(searchActions);
+        clearQueryButton.html(
+            '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+                '<path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />' +
+            '</svg>'
+        );
+
+        const sectionHeader = $("<div>", { class: "nr-advanced-search-section-header" }).appendTo(controls);
+        $("<span>", { text: "Filters" }).appendTo(sectionHeader);
+        const clearButton = $("<button>", {
+            class: "nr-advanced-search-reset",
+            type: "button",
+            text: "Reset"
+        }).appendTo(sectionHeader);
+
+        const filters = $("<div>", { class: "nr-advanced-search-filters" }).appendTo(controls);
+        const caseSensitive = createCheckbox("Case sensitive", false, "Match letter case");
+        const wholeWord = createCheckbox("Whole word", false, "Match complete words only");
+        const regex = createCheckbox("Regex", false, "Interpret the query as a regular expression");
+        const numeric = createCheckbox("Exact number", false, "Distinguish 810 from 1810 and 8100");
+        const currentFlow = createCheckbox("Current flow", false, "Search soltanto nel flow aperto");
+        const includeConfig = createCheckbox("Config nodes", false, "Include anche i nodes di configurazione");
+
+        [caseSensitive, wholeWord, regex, numeric, currentFlow, includeConfig].forEach(function(option) {
+            option.wrapper.appendTo(filters);
+        });
+
+        // Node-type filtering remains available through type:function,
+        // while the dropdown stays hidden from the interface.
+        const nodeType = $("<select>", {
+            class: "nr-advanced-search-node-type-filter",
+            "aria-hidden": "true",
+            tabindex: "-1"
+        });
+
+        const behaviorHeader = $("<div>", { class: "nr-advanced-search-section-header nr-advanced-search-behavior-header" }).appendTo(controls);
+        $("<span>", { text: "Editor behaviour" }).appendTo(behaviorHeader);
+        const behavior = $("<div>", { class: "nr-advanced-search-behavior" }).appendTo(controls);
+        const blockCoreSearch = createCheckbox(
+            "Block Node-RED 4 search hover reveal",
+            blockCoreSearchHover,
+            "Prevent Node-RED 4 core search from revealing nodes on mouse hover"
+        );
+        blockCoreSearch.wrapper.appendTo(behavior);
+        $("<div>", {
+            class: "nr-advanced-search-behavior-text",
+            text: "Clicking a result continues to work normally."
+        }).appendTo(behavior);
+
+        const help = $("<details>", { class: "nr-advanced-search-help" }).appendTo(controls);
+        const helpSummary = $("<summary>").appendTo(help);
+        $("<i>", { class: "fa fa-lightbulb-o" }).appendTo(helpSummary);
+        $("<span>", { text: "Quick syntax" }).appendTo(helpSummary);
+        const helpText = $("<div>", { class: "nr-advanced-search-help-text" }).appendTo(help);
+        [
+            ["case:Echo", "case sensitive"],
+            ["word:pippo", "whole word"],
+            ["num:810", "exact number"],
+            ["type:function pippo", "Function nodes only"],
+            ["flow:current pippo", "current flow"],
+            ["re:id\\s*:\\s*810", "regular expression"],
+            ["\"frase esatta\"", "exact phrase"]
+        ].forEach(function(item) {
+            const line = $("<div>", { class: "nr-advanced-search-help-line" }).appendTo(helpText);
+            $("<code>", { text: item[0] }).appendTo(line);
+            $("<span>", { text: item[1] }).appendTo(line);
+        });
+
+        const status = $("<div>", { class: "nr-advanced-search-status" }).appendTo(content);
+        $("<i>", { class: "fa fa-info-circle" }).appendTo(status);
+        const summary = $("<span>", { text: "Ready" }).appendTo(status);
+        const error = $("<div>", { class: "nr-advanced-search-error" }).hide().appendTo(content);
+        const results = $("<div>", { class: "nr-advanced-search-results" }).appendTo(content);
+
+        ui = {
+            content: content,
+            query: query,
+            searchButton: searchButton,
+            clearButton: clearButton,
+            clearQueryButton: clearQueryButton,
+            caseSensitive: caseSensitive.input,
+            wholeWord: wholeWord.input,
+            regex: regex.input,
+            numeric: numeric.input,
+            currentFlow: currentFlow.input,
+            includeConfig: includeConfig.input,
+            nodeType: nodeType,
+            blockCoreSearch: blockCoreSearch.input,
+            summary: summary,
+            error: error,
+            results: results
+        };
+
+        function updateClearQueryButton() {
+            clearQueryButton.prop("disabled", query.val().length == 0);
+        }
+
+        searchButton.on("click", performSearch);
+        query.on("input", updateClearQueryButton);
+        query.on("keydown", function(event) {
+            if (event.key == "Enter") {
+                event.preventDefault();
+                performSearch();
+            }
+            if (event.key == "Escape") {
+                query.val("");
+                updateClearQueryButton();
+            }
+        });
+        clearQueryButton.on("click", function() {
+            query.val("");
+            updateClearQueryButton();
+            query.trigger("focus");
+        });
+        clearButton.on("click", function() {
+            query.val("");
+            updateClearQueryButton();
+            caseSensitive.input.prop("checked", false);
+            wholeWord.input.prop("checked", false);
+            regex.input.prop("checked", false);
+            numeric.input.prop("checked", false);
+            currentFlow.input.prop("checked", false);
+            includeConfig.input.prop("checked", false);
+            refreshNodeTypes(false);
+            nodeType.val("");
+            error.empty().hide();
+            results.empty();
+            summary.text("Ready");
+            query.trigger("focus");
+        });
+        includeConfig.input.on("change", function() {
+            refreshNodeTypes(includeConfig.input.prop("checked"));
+        });
+        regex.input.on("change", function() {
+            if (regex.input.prop("checked")) {
+                numeric.input.prop("checked", false);
+            }
+        });
+        numeric.input.on("change", function() {
+            if (numeric.input.prop("checked")) {
+                regex.input.prop("checked", false);
+            }
+        });
+        blockCoreSearch.input.on("change", function() {
+            blockCoreSearchHover = blockCoreSearch.input.prop("checked");
+            saveBlockCoreSearchHover();
+        });
+
+        refreshNodeTypes(false);
+        updateClearQueryButton();
+        return content;
+    }
+
+    RED.plugins.registerPlugin(pluginId, {
+        type: "editor",
+        onadd: function() {
+            let content;
+
+            blockCoreSearchHover = loadBlockCoreSearchHover();
+            installCoreSearchHoverGuard();
+
+            try {
+                content = createSidebar();
+            } catch (error) {
+                console.error("[Advanced Search] Unable to create the sidebar", error);
+                content = $("<div>", { class: "nr-advanced-search-load-error" });
+                $("<h3>", { text: "Advanced Search failed to load" }).appendTo(content);
+                $("<p>", {
+                    text: error && error.message ? error.message : String(error)
+                }).appendTo(content);
+            }
+
+            if (typeof RED.sidebar.containsTab == "function" && RED.sidebar.containsTab(tabId)) {
+                RED.sidebar.removeTab(tabId);
+            }
+
+            RED.actions.remove(actionName);
+            RED.actions.add(actionName, function() {
+                RED.sidebar.show(tabId);
+                setTimeout(function() {
+                    if (ui && ui.query) {
+                        ui.query.trigger("focus");
+                    }
+                }, 50);
+            });
+
+            RED.sidebar.addTab({
+                id: tabId,
+                label: "Find+",
+                name: "Advanced Search",
+                iconClass: "fa fa-search",
+                content: content,
+                action: actionName,
+                enableOnEdit: true
+            });
+        },
+        onremove: function() {
+            removeCoreSearchHoverGuard();
+            if (typeof RED.sidebar.containsTab != "function" || RED.sidebar.containsTab(tabId)) {
+                RED.sidebar.removeTab(tabId);
+            }
+            RED.actions.remove(actionName);
+            ui = null;
+        }
+    });
+})();
+</script>
+
+<style>
+.nr-advanced-search {
+    --nr-as-accent: var(--red-ui-primary-color, #3f7f93);
+    --nr-as-border: var(--red-ui-primary-border-color, #c8c8c8);
+    --nr-as-panel: var(--red-ui-secondary-background, rgba(127, 127, 127, 0.07));
+    --nr-as-hover: var(--red-ui-list-item-background-hover, rgba(127, 127, 127, 0.10));
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.nr-advanced-search *,
+.nr-advanced-search *::before,
+.nr-advanced-search *::after {
+    box-sizing: border-box;
+}
+
+.nr-advanced-search-controls {
+    border-bottom: 1px solid var(--nr-as-border);
+    flex: 0 0 auto;
+    padding: 12px;
+}
+
+.nr-advanced-search-heading {
+    margin-bottom: 11px;
+}
+
+.nr-advanced-search-heading-title {
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+}
+
+.nr-advanced-search-heading-text {
+    font-size: 11px;
+    line-height: 1.35;
+    margin-top: 3px;
+    opacity: 0.68;
+}
+
+.nr-advanced-search-search-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.nr-advanced-search-query {
+    background: var(--red-ui-form-input-background, var(--red-ui-primary-background, #fff));
+    border: 1px solid var(--nr-as-border);
+    border-radius: 4px;
+    color: inherit;
+    display: block;
+    font: inherit;
+    height: 36px;
+    line-height: 34px;
+    margin: 0;
+    min-width: 0;
+    outline: 0;
+    padding: 0 9px;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    width: 100%;
+}
+
+.nr-advanced-search-query:focus {
+    border-color: var(--nr-as-accent);
+    box-shadow: 0 0 0 1px var(--nr-as-accent);
+}
+
+.nr-advanced-search-query::placeholder {
+    color: inherit;
+    opacity: 0.55;
+}
+
+.nr-advanced-search-search-actions {
+    align-items: center;
+    display: flex;
+    gap: 3px;
+    justify-content: flex-start;
+    min-height: 30px;
+}
+
+.nr-advanced-search-clear-query {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 5px;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    height: 30px;
+    justify-content: center;
+    margin: 0;
+    opacity: 0.45;
+    padding: 0;
+    transition: background 0.12s ease, opacity 0.12s ease, transform 0.08s ease;
+    width: 30px;
+}
+
+.nr-advanced-search-clear-query svg {
+    display: block;
+    height: 12px;
+    overflow: visible;
+    width: 12px;
+}
+
+.nr-advanced-search-clear-query path {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 1.8;
+}
+
+.nr-advanced-search-clear-query:hover {
+    background: var(--nr-as-hover);
+    opacity: 1;
+}
+
+.nr-advanced-search-clear-query:active {
+    transform: translateY(1px);
+}
+
+.nr-advanced-search-clear-query:disabled {
+    cursor: default;
+    opacity: 0.18;
+}
+
+.nr-advanced-search-search-button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 5px;
+    color: var(--nr-as-accent);
+    cursor: pointer;
+    display: inline-flex;
+    height: 30px;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+    transition: background 0.12s ease, transform 0.08s ease;
+    width: 34px;
+}
+
+.nr-advanced-search-search-button svg {
+    display: block;
+    height: 19px;
+    overflow: visible;
+    width: 19px;
+}
+
+.nr-advanced-search-search-button circle,
+.nr-advanced-search-search-button path {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-width: 1.9;
+}
+
+.nr-advanced-search-search-button:hover {
+    background: var(--nr-as-hover);
+}
+
+.nr-advanced-search-search-button:active {
+    transform: translateY(1px);
+}
+
+.nr-advanced-search-search-button:focus-visible {
+    box-shadow: 0 0 0 2px var(--nr-as-accent);
+    outline: 0;
+}
+
+.nr-advanced-search-section-header {
+    align-items: center;
+    display: flex;
+    font-size: 10px;
+    font-weight: 650;
+    justify-content: space-between;
+    letter-spacing: 0.06em;
+    margin-top: 13px;
+    text-transform: uppercase;
+}
+
+.nr-advanced-search-reset {
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font-size: 10px;
+    opacity: 0.6;
+    padding: 2px 0;
+    text-transform: none;
+}
+
+.nr-advanced-search-reset:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
+
+.nr-advanced-search-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 7px;
+}
+
+.nr-advanced-search-option {
+    cursor: pointer;
+    display: inline-flex;
+    margin: 0;
+    user-select: none;
+}
+
+.nr-advanced-search-option input {
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    width: 0;
+}
+
+.nr-advanced-search-option-label {
+    align-items: center;
+    background: var(--nr-as-panel);
+    border: 1px solid var(--nr-as-border);
+    border-radius: 999px;
+    display: inline-flex;
+    font-size: 11px;
+    gap: 5px;
+    line-height: 1;
+    min-height: 27px;
+    padding: 6px 9px;
+    transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.nr-advanced-search-option-label .fa {
+    display: none;
+    font-size: 9px;
+}
+
+.nr-advanced-search-option:hover .nr-advanced-search-option-label {
+    background: var(--nr-as-hover);
+}
+
+.nr-advanced-search-option input:focus-visible + .nr-advanced-search-option-label {
+    box-shadow: 0 0 0 2px var(--nr-as-accent);
+}
+
+.nr-advanced-search-option input:checked + .nr-advanced-search-option-label {
+    background: rgba(63, 127, 147, 0.16);
+    border-color: var(--nr-as-accent);
+    font-weight: 600;
+}
+
+.nr-advanced-search-option input:checked + .nr-advanced-search-option-label .fa {
+    display: inline-block;
+}
+
+.nr-advanced-search-behavior-header {
+    margin-top: 11px;
+}
+
+.nr-advanced-search-behavior {
+    align-items: flex-start;
+    background: var(--nr-as-panel);
+    border: 1px solid var(--nr-as-border);
+    border-radius: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 7px;
+    padding: 8px;
+}
+
+.nr-advanced-search-behavior .nr-advanced-search-option-label {
+    background: transparent;
+}
+
+.nr-advanced-search-behavior-text {
+    font-size: 10px;
+    line-height: 1.35;
+    opacity: 0.66;
+    padding-left: 2px;
+}
+
+.nr-advanced-search-help {
+    background: var(--nr-as-panel);
+    border: 1px solid transparent;
+    border-radius: 5px;
+    font-size: 11px;
+    margin-top: 10px;
+    overflow: hidden;
+}
+
+.nr-advanced-search-help[open] {
+    border-color: var(--nr-as-border);
+}
+
+.nr-advanced-search-help summary {
+    align-items: center;
+    cursor: pointer;
+    display: flex;
+    gap: 6px;
+    list-style: none;
+    opacity: 0.76;
+    padding: 7px 8px;
+}
+
+.nr-advanced-search-help summary::-webkit-details-marker {
+    display: none;
+}
+
+.nr-advanced-search-help summary:hover {
+    opacity: 1;
+}
+
+.nr-advanced-search-help-text {
+    border-top: 1px solid var(--nr-as-border);
+    display: grid;
+    gap: 5px;
+    padding: 8px;
+}
+
+.nr-advanced-search-help-line {
+    align-items: baseline;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+}
+
+.nr-advanced-search-help-line code {
+    background: var(--nr-as-hover);
+    border-radius: 3px;
+    font-family: var(--red-ui-monospace-font, monospace);
+    font-size: 10px;
+    padding: 2px 4px;
+    white-space: nowrap;
+}
+
+.nr-advanced-search-help-line span {
+    opacity: 0.68;
+}
+
+.nr-advanced-search-status {
+    align-items: center;
+    border-bottom: 1px solid var(--nr-as-border);
+    display: flex;
+    flex: 0 0 auto;
+    font-size: 10px;
+    gap: 6px;
+    min-height: 31px;
+    opacity: 0.76;
+    padding: 7px 12px;
+}
+
+.nr-advanced-search-error {
+    background: var(--red-ui-form-input-error-background, #fbe9e9);
+    border: 1px solid var(--red-ui-form-input-error-border-color, #c44);
+    border-radius: 5px;
+    flex: 0 0 auto;
+    margin: 9px 10px 0;
+    padding: 8px 9px;
+}
+
+.nr-advanced-search-results {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 9px 9px 14px;
+}
+
+.nr-advanced-search-empty {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    min-height: 170px;
+    justify-content: center;
+    opacity: 0.62;
+    padding: 24px 16px;
+    text-align: center;
+}
+
+.nr-advanced-search-empty-icon {
+    font-size: 27px;
+    margin-bottom: 10px;
+}
+
+.nr-advanced-search-empty-title {
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.nr-advanced-search-empty-text {
+    font-size: 11px;
+    line-height: 1.4;
+    margin-top: 4px;
+    max-width: 220px;
+}
+
+.nr-advanced-search-result {
+    background: var(--red-ui-primary-background, transparent);
+    border: 1px solid var(--nr-as-border);
+    border-radius: 6px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    margin-bottom: 9px;
+    overflow: hidden;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+
+.nr-advanced-search-result:hover {
+    border-color: var(--nr-as-accent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.nr-advanced-search-result-header {
+    align-items: flex-start;
+    background: var(--nr-as-panel);
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    padding: 9px;
+}
+
+.nr-advanced-search-result-title-area {
+    min-width: 0;
+}
+
+.nr-advanced-search-result-title-row {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+}
+
+.nr-advanced-search-result-title {
+    font-size: 12px;
+    font-weight: 650;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nr-advanced-search-node-type,
+.nr-advanced-search-match-count {
+    align-items: center;
+    border: 1px solid var(--nr-as-border);
+    border-radius: 999px;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-size: 9px;
+    font-weight: 600;
+    justify-content: center;
+    line-height: 1;
+    min-height: 18px;
+    padding: 3px 6px;
+}
+
+.nr-advanced-search-node-type {
+    opacity: 0.72;
+}
+
+.nr-advanced-search-match-count {
+    background: var(--nr-as-accent);
+    border-color: var(--nr-as-accent);
+    color: var(--red-ui-text-color-inverted, #fff);
+    min-width: 18px;
+    padding-left: 5px;
+    padding-right: 5px;
+}
+
+.nr-advanced-search-result-meta {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 9px;
+    gap: 5px;
+    margin-top: 4px;
+    opacity: 0.66;
+    overflow-wrap: anywhere;
+}
+
+.nr-advanced-search-id::before {
+    content: "•";
+    margin-right: 5px;
+}
+
+.nr-advanced-search-reveal {
+    align-items: center;
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 5px;
+}
+
+.nr-advanced-search-match-list {
+    background: var(--red-ui-primary-background, transparent);
+}
+
+.nr-advanced-search-match {
+    border-top: 1px solid var(--nr-as-border);
+    padding: 8px 9px;
+    transition: background 0.12s ease;
+}
+
+.nr-advanced-search-match:first-child {
+    border-top: 0;
+}
+
+.nr-advanced-search-match:hover {
+    background: var(--nr-as-hover);
+}
+
+.nr-advanced-search-match-path {
+    align-items: center;
+    display: flex;
+    font-size: 9px;
+    font-weight: 650;
+    gap: 5px;
+    opacity: 0.72;
+}
+
+.nr-advanced-search-match-path .fa {
+    font-size: 9px;
+}
+
+.nr-advanced-search-match-snippet {
+    background: transparent;
+    border: 0;
+    font-family: var(--red-ui-monospace-font, monospace);
+    font-size: 10.5px;
+    line-height: 1.42;
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+    padding: 0;
+    white-space: pre-wrap;
+}
+
+@media (max-width: 300px) {
+    .nr-advanced-search-reveal span {
+        display: none;
+    }
+}
+.nr-advanced-search-load-error {
+    padding: 14px;
+}
+
+.nr-advanced-search-load-error h3 {
+    font-size: 14px;
+    margin: 0 0 8px;
+}
+
+.nr-advanced-search-load-error p {
+    font-family: var(--red-ui-monospace-font, monospace);
+    font-size: 11px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+</style>
