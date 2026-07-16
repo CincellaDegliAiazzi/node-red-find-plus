@@ -6,6 +6,7 @@ It was created for large flows where a basic text search is not enough — espec
 
 <img width="394" height="490" alt="Search4" src="https://github.com/user-attachments/assets/4db525b0-84fb-40ea-8a9d-9969bb9f25c4" />
 
+
 <img width="277" height="860" alt="Search" src="https://github.com/user-attachments/assets/199009ce-903b-449a-b8c0-235512515ac0" />
 
 ## Features
