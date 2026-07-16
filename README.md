@@ -1,6 +1,6 @@
 # Find+ for Node-RED
 
-**Find+** is an experimental editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
+**Find+** is an editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
 
 It was created for large flows where a basic text search is not enough — especially when a value such as `810` must be found as an exact number rather than as part of `1810` or `8100`.
 
