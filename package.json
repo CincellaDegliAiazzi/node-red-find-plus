@@ -1,7 +1,7 @@
 {
   "name": "node-red-plugin-advanced-search",
-  "version": "0.4.0",
-  "description": "Find+ advanced search sidebar and Node-RED 4 core-search hover guard for the Node-RED editor",
+  "version": "0.4.1",
+  "description": "Find+ advanced search sidebar for the Node-RED editor",
   "keywords": [
     "node-red",
     "editor-plugin",

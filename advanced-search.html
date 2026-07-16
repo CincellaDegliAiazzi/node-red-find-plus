@@ -8,73 +8,10 @@
     const maxNodeResults = 500;
     const maxMatchesPerNode = 8;
     const maxMatchesPerProperty = 4;
-    const blockCoreSearchHoverStorageKey = "node-red-advanced-search.block-core-search-hover";
-
     let ui = null;
-    let blockCoreSearchHover = true;
 
     function escapeRegExp(value) {
         return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-
-    function loadBlockCoreSearchHover() {
-        try {
-            const saved = window.localStorage.getItem(blockCoreSearchHoverStorageKey);
-            return saved === null ? true : saved == "true";
-        } catch (error) {
-            return true;
-        }
-    }
-
-    function saveBlockCoreSearchHover() {
-        try {
-            window.localStorage.setItem(blockCoreSearchHoverStorageKey, String(blockCoreSearchHover));
-        } catch (error) {
-            console.warn("[Advanced Search] Unable to save the core search hover preference", error);
-        }
-    }
-
-    function stopCoreSearchAutoReveal(event) {
-        if (!blockCoreSearchHover) {
-            return;
-        }
-
-        let target = event.target;
-        if (target && target.nodeType != 1) {
-            target = target.parentElement;
-        }
-        if (!target || typeof target.closest != "function") {
-            return;
-        }
-
-        const result = target.closest("#red-ui-search .red-ui-search-result");
-        if (!result) {
-            return;
-        }
-
-        // Only intercept actual node results. History, “more results” entries,
-        // and empty-state messages keep their normal behaviour.
-        if (!result.querySelector(".red-ui-search-result-node-description")) {
-            return;
-        }
-
-        // Node-RED 5 already removed hover reveal and adds a result tools container.
-        // In that case the plug-in does not interfere.
-        if (result.querySelector(".red-ui-search-result-tools")) {
-            return;
-        }
-
-        event.stopImmediatePropagation();
-        event.stopPropagation();
-    }
-
-    function installCoreSearchHoverGuard() {
-        document.removeEventListener("mouseover", stopCoreSearchAutoReveal, true);
-        document.addEventListener("mouseover", stopCoreSearchAutoReveal, true);
-    }
-
-    function removeCoreSearchHoverGuard() {
-        document.removeEventListener("mouseover", stopCoreSearchAutoReveal, true);
     }
 
     function unquote(value) {
@@ -455,7 +392,7 @@
             const revealButton = $("<button>", {
                 class: "red-ui-button red-ui-button-small nr-advanced-search-reveal",
                 type: "button",
-                title: "Reveal il node nel workspace"
+                title: "Reveal the node in the workspace"
             }).appendTo(header).on("click", function(event) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -552,8 +489,8 @@
         const wholeWord = createCheckbox("Whole word", false, "Match complete words only");
         const regex = createCheckbox("Regex", false, "Interpret the query as a regular expression");
         const numeric = createCheckbox("Exact number", false, "Distinguish 810 from 1810 and 8100");
-        const currentFlow = createCheckbox("Current flow", false, "Search soltanto nel flow aperto");
-        const includeConfig = createCheckbox("Config nodes", false, "Include anche i nodes di configurazione");
+        const currentFlow = createCheckbox("Current flow", false, "Search only in the active flow");
+        const includeConfig = createCheckbox("Config nodes", false, "Include configuration nodes");
 
         [caseSensitive, wholeWord, regex, numeric, currentFlow, includeConfig].forEach(function(option) {
             option.wrapper.appendTo(filters);
@@ -566,20 +503,6 @@
             "aria-hidden": "true",
             tabindex: "-1"
         });
-
-        const behaviorHeader = $("<div>", { class: "nr-advanced-search-section-header nr-advanced-search-behavior-header" }).appendTo(controls);
-        $("<span>", { text: "Editor behaviour" }).appendTo(behaviorHeader);
-        const behavior = $("<div>", { class: "nr-advanced-search-behavior" }).appendTo(controls);
-        const blockCoreSearch = createCheckbox(
-            "Block Node-RED 4 search hover reveal",
-            blockCoreSearchHover,
-            "Prevent Node-RED 4 core search from revealing nodes on mouse hover"
-        );
-        blockCoreSearch.wrapper.appendTo(behavior);
-        $("<div>", {
-            class: "nr-advanced-search-behavior-text",
-            text: "Clicking a result continues to work normally."
-        }).appendTo(behavior);
 
         const help = $("<details>", { class: "nr-advanced-search-help" }).appendTo(controls);
         const helpSummary = $("<summary>").appendTo(help);
@@ -619,7 +542,6 @@
             currentFlow: currentFlow.input,
             includeConfig: includeConfig.input,
             nodeType: nodeType,
-            blockCoreSearch: blockCoreSearch.input,
             summary: summary,
             error: error,
             results: results
@@ -675,11 +597,6 @@
                 regex.input.prop("checked", false);
             }
         });
-        blockCoreSearch.input.on("change", function() {
-            blockCoreSearchHover = blockCoreSearch.input.prop("checked");
-            saveBlockCoreSearchHover();
-        });
-
         refreshNodeTypes(false);
         updateClearQueryButton();
         return content;
@@ -689,9 +606,6 @@
         type: "editor",
         onadd: function() {
             let content;
-
-            blockCoreSearchHover = loadBlockCoreSearchHover();
-            installCoreSearchHoverGuard();
 
             try {
                 content = createSidebar();
@@ -729,7 +643,6 @@
             });
         },
         onremove: function() {
-            removeCoreSearchHoverGuard();
             if (typeof RED.sidebar.containsTab != "function" || RED.sidebar.containsTab(tabId)) {
                 RED.sidebar.removeTab(tabId);
             }
@@ -997,33 +910,6 @@
 
 .nr-advanced-search-option input:checked + .nr-advanced-search-option-label .fa {
     display: inline-block;
-}
-
-.nr-advanced-search-behavior-header {
-    margin-top: 11px;
-}
-
-.nr-advanced-search-behavior {
-    align-items: flex-start;
-    background: var(--nr-as-panel);
-    border: 1px solid var(--nr-as-border);
-    border-radius: 5px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    margin-top: 7px;
-    padding: 8px;
-}
-
-.nr-advanced-search-behavior .nr-advanced-search-option-label {
-    background: transparent;
-}
-
-.nr-advanced-search-behavior-text {
-    font-size: 10px;
-    line-height: 1.35;
-    opacity: 0.66;
-    padding-left: 2px;
 }
 
 .nr-advanced-search-help {

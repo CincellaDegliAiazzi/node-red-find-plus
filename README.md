@@ -1,14 +1,8 @@
 # Find+ for Node-RED
 
-**Find+** is an experimental editor plug-in that adds an advanced search sidebar to Node-RED without replacing the built-in search.
+**Find+** is an experimental editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
 
 It was created for large flows where a basic text search is not enough — especially when a value such as `810` must be found as an exact number rather than as part of `1810` or `8100`.
-
-4.1.11
-<img width="394" height="490" alt="Search4" src="https://github.com/user-attachments/assets/4db525b0-84fb-40ea-8a9d-9969bb9f25c4" />
-
-5.0.1
-<img width="277" height="860" alt="Search" src="https://github.com/user-attachments/assets/199009ce-903b-449a-b8c0-235512515ac0" />
 
 ## Features
 
@@ -23,7 +17,6 @@ It was created for large flows where a basic text search is not enough — espec
 - Show the matching property and line number for multiline text.
 - Reveal a node without closing the Find+ sidebar.
 - Light and dark theme support.
-- Optional Node-RED 4 hover guard: prevents the built-in search from moving the workspace merely because the pointer passes over a result.
 
 ## Quick syntax
 
@@ -50,8 +43,10 @@ Download the `.tgz` file from the GitHub Release and copy it to the machine runn
 
 ```bash
 cd ~/.node-red
-npm install /path/to/node-red-plugin-advanced-search-0.4.0.tgz
+npm install ~/Downloads/node-red-plugin-advanced-search-0.4.1.tgz
 ```
+
+Replace `~/Downloads/` with the directory where the file was downloaded.
 
 Restart Node-RED:
 
@@ -80,10 +75,10 @@ Restart Node-RED and reload the editor.
 
 ## Compatibility
 
-| Node-RED version | Find+ | Core-search hover guard |
-|---|---:|---:|
-| 4.1.x | Yes | Yes |
-| 5.x | Yes | Not needed; Find+ leaves the updated core search alone |
+| Node-RED version | Find+ |
+|---|---:|
+| 4.1.x | Yes |
+| 5.x | Yes |
 
 Currently tested on:
 

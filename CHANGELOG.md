@@ -2,15 +2,21 @@
 
 All notable changes to this project are documented here.
 
-## [0.4.0] - 2026-07-16
+## [0.4.1] - 2026-07-16
+
+### Changed
+
+- Removed the optional Node-RED 4 built-in-search hover guard.
+- Find+ now operates strictly as an independent sidebar and does not alter the behaviour of Node-RED's built-in search.
+- Updated package description and documentation accordingly.
+
+## [0.4.0] - 2026-07-15
 
 ### Added
 
 - English user interface and documentation for the first GitHub-ready release.
 - GitHub issue templates and contribution guidance.
 - Package validation script.
-
-- Compatibility verified on Node-RED 4.1.11 and 5.0.1.
 
 ### Retained from 0.3.3
 
