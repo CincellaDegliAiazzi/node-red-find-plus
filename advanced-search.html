@@ -7,8 +7,9 @@
     const actionName = "advanced-search:show";
     const maxNodeResults = 500;
     const maxMatchesPerNode = 8;
-    const maxMatchesPerProperty = 4;
     let ui = null;
+    let currentResults = [];
+    let currentResultIndex = -1;
 
     function escapeRegExp(value) {
         return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -93,12 +94,17 @@
                     break;
 
                 default:
-                    terms.push(unquote(token));
+                    // Only Find+ prefixes have a special meaning. Everything else
+                    // must remain literal, including code such as topic: "LACAR".
+                    terms.push(token);
                     break;
             }
         });
 
         options.query = terms.join(" ").trim();
+        if (options.query.length >= 2 && options.query[0] == '"' && options.query[options.query.length - 1] == '"') {
+            options.query = unquote(options.query);
+        }
         return options;
     }
 
@@ -155,66 +161,73 @@
         return { line: line, snippet: snippet };
     }
 
-    function findMatches(value, path, matcher) {
+    function recordMatch(state, locationKey, createMatch) {
+        state.totalMatches++;
+        if (!state.locations.has(locationKey)) {
+            state.locations.add(locationKey);
+            state.totalLocations++;
+            if (state.matches.length < maxMatchesPerNode) {
+                state.matches.push(createMatch());
+            }
+        }
+    }
+
+    function findMatches(value, path, matcher, state) {
         if (matcher.numeric && typeof value == "number") {
             if (value === matcher.numericValue) {
-                return [{ path: path, line: null, snippet: String(value) }];
+                recordMatch(state, path + "|property", function() {
+                    return { path: path, line: null, snippet: String(value) };
+                });
             }
-            return [];
+            return;
         }
 
         if (typeof value != "string" && typeof value != "number" && typeof value != "boolean") {
-            return [];
+            return;
         }
 
         const text = String(value);
-        const matches = [];
         matcher.regex.lastIndex = 0;
 
         let match;
         while ((match = matcher.regex.exec(text)) !== null) {
-            const lineData = getLineData(text, match.index);
-            matches.push({
-                path: path,
-                line: text.includes("\n") ? lineData.line : null,
-                snippet: lineData.snippet || text
+            const matchIndex = match.index;
+            const lineData = getLineData(text, matchIndex);
+            const line = text.includes("\n") ? lineData.line : null;
+            recordMatch(state, path + "|" + (line === null ? "property" : line), function() {
+                return {
+                    path: path,
+                    line: line,
+                    snippet: lineData.snippet || text
+                };
             });
-
-            if (matches.length >= maxMatchesPerProperty) {
-                break;
-            }
 
             if (match[0] === "") {
                 matcher.regex.lastIndex++;
             }
         }
-
-        return matches;
     }
 
-    function searchValue(value, path, matcher, matches) {
-        if (matches.length >= maxMatchesPerNode || value === null || value === undefined) {
+    function searchValue(value, path, matcher, state) {
+        if (value === null || value === undefined) {
             return;
         }
 
         if (Array.isArray(value)) {
             value.forEach(function(item, index) {
-                searchValue(item, path + "[" + index + "]", matcher, matches);
+                searchValue(item, path + "[" + index + "]", matcher, state);
             });
             return;
         }
 
         if (typeof value == "object") {
             Object.keys(value).forEach(function(key) {
-                if (matches.length >= maxMatchesPerNode) {
-                    return;
-                }
-                searchValue(value[key], path ? path + "." + key : key, matcher, matches);
+                searchValue(value[key], path ? path + "." + key : key, matcher, state);
             });
             return;
         }
 
-        matches.push.apply(matches, findMatches(value, path, matcher));
+        findMatches(value, path, matcher, state);
     }
 
     function getSearchData(node) {
@@ -266,6 +279,23 @@
         return flow.label || flow.name || flow.id;
     }
 
+    function getNodeColor(node) {
+        if (!node || !node._def) {
+            return "";
+        }
+
+        let color = node._def.color;
+        if (typeof color == "function") {
+            try {
+                color = color.call(node);
+            } catch (error) {
+                return "";
+            }
+        }
+
+        return typeof color == "string" ? color.trim() : "";
+    }
+
     function collectNodes(includeConfig) {
         const nodes = [];
         RED.nodes.eachNode(function(node) {
@@ -305,6 +335,9 @@
         const started = performance.now();
         ui.error.empty().hide();
         ui.results.empty();
+        currentResults = [];
+        currentResultIndex = -1;
+        updateNavigation();
 
         let options;
         let matcher;
@@ -335,12 +368,22 @@
                 continue;
             }
 
-            const matches = [];
-            searchValue(getSearchData(node), "", matcher, matches);
+            const matchState = {
+                matches: [],
+                totalMatches: 0,
+                totalLocations: 0,
+                locations: new Set()
+            };
+            searchValue(getSearchData(node), "", matcher, matchState);
 
-            if (matches.length) {
-                results.push({ node: node, matches: matches });
-                totalMatches += matches.length;
+            if (matchState.totalMatches) {
+                results.push({
+                    node: node,
+                    matches: matchState.matches,
+                    totalMatches: matchState.totalMatches,
+                    totalLocations: matchState.totalLocations
+                });
+                totalMatches += matchState.totalMatches;
             }
 
             if (results.length >= maxNodeResults) {
@@ -348,6 +391,14 @@
                 break;
             }
         }
+
+        results.sort(function(a, b) {
+            const typeComparison = String(a.node.type).localeCompare(String(b.node.type));
+            if (typeComparison) {
+                return typeComparison;
+            }
+            return getNodeLabel(a.node).localeCompare(getNodeLabel(b.node));
+        });
 
         renderResults(results);
 
@@ -359,7 +410,68 @@
         ui.summary.text(summary);
     }
 
+    function updateNavigation() {
+        if (!ui || !ui.previousResult || !ui.nextResult || !ui.resultPosition) {
+            return;
+        }
+
+        const count = currentResults.length;
+        const hasResults = count > 0;
+        ui.previousResult.prop("disabled", !hasResults);
+        ui.nextResult.prop("disabled", !hasResults);
+
+        if (!hasResults) {
+            ui.resultPosition.text("0 / 0");
+            return;
+        }
+
+        ui.resultPosition.text((currentResultIndex >= 0 ? currentResultIndex + 1 : "–") + " / " + count);
+    }
+
+    function selectResult(index, revealNode) {
+        if (!currentResults.length) {
+            return;
+        }
+
+        const count = currentResults.length;
+        currentResultIndex = ((index % count) + count) % count;
+
+        currentResults.forEach(function(result, resultIndex) {
+            if (result.card) {
+                result.card.toggleClass("is-active", resultIndex == currentResultIndex);
+            }
+        });
+
+        const selected = currentResults[currentResultIndex];
+        if (selected.card && selected.card[0] && typeof selected.card[0].scrollIntoView == "function") {
+            selected.card[0].scrollIntoView({ block: "nearest" });
+        }
+
+        updateNavigation();
+
+        if (revealNode) {
+            RED.view.reveal(selected.node.id);
+        }
+    }
+
+    function moveToResult(step) {
+        if (!currentResults.length) {
+            return;
+        }
+
+        if (currentResultIndex < 0) {
+            selectResult(step > 0 ? 0 : currentResults.length - 1, true);
+            return;
+        }
+
+        selectResult(currentResultIndex + step, true);
+    }
+
     function renderResults(results) {
+        currentResults = results;
+        currentResultIndex = -1;
+        updateNavigation();
+
         if (!results.length) {
             const empty = $("<div>", { class: "nr-advanced-search-empty" }).appendTo(ui.results);
             $("<i>", { class: "fa fa-search nr-advanced-search-empty-icon" }).appendTo(empty);
@@ -371,19 +483,73 @@
             return;
         }
 
+        const typeCounts = new Map();
         results.forEach(function(result) {
+            const type = result.node.type || "unknown";
+            typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+        });
+
+        let previousType = null;
+        results.forEach(function(result, resultIndex) {
             const node = result.node;
+            const nodeType = node.type || "unknown";
+
+            if (nodeType != previousType) {
+                const groupHeader = $("<div>", {
+                    class: "nr-advanced-search-group-header"
+                }).appendTo(ui.results);
+
+                const groupColor = getNodeColor(node);
+                if (groupColor) {
+                    $("<span>", {
+                        class: "nr-advanced-search-group-color",
+                        "aria-hidden": "true"
+                    }).css("background-color", groupColor).appendTo(groupHeader);
+                }
+
+                $("<span>", {
+                    class: "nr-advanced-search-group-type",
+                    text: nodeType
+                }).appendTo(groupHeader);
+
+                const groupCount = typeCounts.get(nodeType);
+                $("<span>", {
+                    class: "nr-advanced-search-group-count",
+                    text: groupCount + (groupCount == 1 ? " node" : " nodes")
+                }).appendTo(groupHeader);
+
+                previousType = nodeType;
+            }
+
             const card = $("<div>", { class: "nr-advanced-search-result" }).appendTo(ui.results);
+            result.card = card;
+
+            const nodeColor = getNodeColor(node);
+            if (nodeColor) {
+                card.addClass("has-node-color").css("--nr-as-node-color", nodeColor);
+            }
+
             const header = $("<div>", { class: "nr-advanced-search-result-header" }).appendTo(card);
             const titleArea = $("<div>", { class: "nr-advanced-search-result-title-area" }).appendTo(header);
             const titleRow = $("<div>", { class: "nr-advanced-search-result-title-row" }).appendTo(titleArea);
+
+            if (nodeColor) {
+                $("<span>", {
+                    class: "nr-advanced-search-node-color",
+                    title: "Node colour"
+                }).css("background-color", nodeColor).appendTo(titleRow);
+            }
 
             $("<div>", { class: "nr-advanced-search-result-title", text: getNodeLabel(node) }).appendTo(titleRow);
             $("<span>", { class: "nr-advanced-search-node-type", text: node.type }).appendTo(titleRow);
             $("<span>", {
                 class: "nr-advanced-search-match-count",
-                text: result.matches.length
-            }).attr("title", result.matches.length == 1 ? "1 match" : result.matches.length + " matches").appendTo(titleRow);
+                text: result.totalLocations
+            }).attr(
+                "title",
+                result.totalLocations + (result.totalLocations == 1 ? " matching line/property" : " matching lines/properties") +
+                    " · " + result.totalMatches + (result.totalMatches == 1 ? " match" : " matches")
+            ).appendTo(titleRow);
 
             const meta = $("<div>", { class: "nr-advanced-search-result-meta" }).appendTo(titleArea);
             $("<span>", { class: "nr-advanced-search-flow", text: getFlowLabel(node) }).appendTo(meta);
@@ -396,7 +562,7 @@
             }).appendTo(header).on("click", function(event) {
                 event.preventDefault();
                 event.stopPropagation();
-                RED.view.reveal(node.id);
+                selectResult(resultIndex, true);
             });
             $("<i>", { class: "fa fa-crosshairs" }).appendTo(revealButton);
             $("<span>", { text: "Reveal" }).appendTo(revealButton);
@@ -411,8 +577,15 @@
                 $("<pre>", { class: "nr-advanced-search-match-snippet", text: match.snippet }).appendTo(row);
             });
 
+            if (result.totalLocations > result.matches.length) {
+                $("<div>", {
+                    class: "nr-advanced-search-match-overflow",
+                    text: "Showing the first " + result.matches.length + " of " + result.totalLocations + " matching lines/properties"
+                }).appendTo(matchList);
+            }
+
             card.on("dblclick", function() {
-                RED.view.reveal(node.id);
+                selectResult(resultIndex, true);
             });
         });
     }
@@ -433,18 +606,11 @@
         const content = $("<div>", { class: "nr-advanced-search" });
         const controls = $("<div>", { class: "nr-advanced-search-controls" }).appendTo(content);
 
-        const heading = $("<div>", { class: "nr-advanced-search-heading" }).appendTo(controls);
-        $("<div>", { class: "nr-advanced-search-heading-title", text: "Advanced Search" }).appendTo(heading);
-        $("<div>", {
-            class: "nr-advanced-search-heading-text",
-            text: "Search node properties and Function code"
-        }).appendTo(heading);
-
         const searchBlock = $("<div>", { class: "nr-advanced-search-search-block" }).appendTo(controls);
         const query = $("<input>", {
             class: "nr-advanced-search-query",
             type: "text",
-            placeholder: "Testo, num:810, case:Echo, re:..."
+            placeholder: "Text, num:810, case:Echo, re:..."
         })
             .attr("autocomplete", "off")
             .attr("spellcheck", "false")
@@ -524,8 +690,49 @@
         });
 
         const status = $("<div>", { class: "nr-advanced-search-status" }).appendTo(content);
-        $("<i>", { class: "fa fa-info-circle" }).appendTo(status);
-        const summary = $("<span>", { text: "Ready" }).appendTo(status);
+        const statusText = $("<div>", { class: "nr-advanced-search-status-text" }).appendTo(status);
+        $("<i>", { class: "fa fa-info-circle" }).appendTo(statusText);
+        const summary = $("<span>", { text: "Ready" }).appendTo(statusText);
+
+        const statusTools = $("<div>", { class: "nr-advanced-search-status-tools" }).appendTo(status);
+        const compactResults = $("<button>", {
+            class: "nr-advanced-search-compact-toggle",
+            type: "button",
+            role: "checkbox",
+            "aria-checked": "false",
+            title: "Show one compact row for each found node"
+        }).appendTo(statusTools);
+        $("<span>", {
+            class: "nr-advanced-search-compact-box",
+            "aria-hidden": "true"
+        }).appendTo(compactResults);
+        $("<span>", {
+            class: "nr-advanced-search-compact-text",
+            text: "Compact"
+        }).appendTo(compactResults);
+
+        const navigation = $("<div>", { class: "nr-advanced-search-navigation" }).appendTo(statusTools);
+        const previousResult = $("<button>", {
+            class: "nr-advanced-search-nav-button",
+            type: "button",
+            title: "Previous found node",
+            "aria-label": "Previous found node"
+        }).prop("disabled", true).appendTo(navigation);
+        $("<i>", { class: "fa fa-chevron-left" }).appendTo(previousResult);
+
+        const resultPosition = $("<span>", {
+            class: "nr-advanced-search-result-position",
+            text: "0 / 0"
+        }).appendTo(navigation);
+
+        const nextResult = $("<button>", {
+            class: "nr-advanced-search-nav-button",
+            type: "button",
+            title: "Next found node",
+            "aria-label": "Next found node"
+        }).prop("disabled", true).appendTo(navigation);
+        $("<i>", { class: "fa fa-chevron-right" }).appendTo(nextResult);
+
         const error = $("<div>", { class: "nr-advanced-search-error" }).hide().appendTo(content);
         const results = $("<div>", { class: "nr-advanced-search-results" }).appendTo(content);
 
@@ -543,6 +750,10 @@
             includeConfig: includeConfig.input,
             nodeType: nodeType,
             summary: summary,
+            previousResult: previousResult,
+            nextResult: nextResult,
+            resultPosition: resultPosition,
+            compactResults: compactResults,
             error: error,
             results: results
         };
@@ -552,6 +763,17 @@
         }
 
         searchButton.on("click", performSearch);
+        previousResult.on("click", function() {
+            moveToResult(-1);
+        });
+        nextResult.on("click", function() {
+            moveToResult(1);
+        });
+        compactResults.on("click", function() {
+            const checked = compactResults.attr("aria-checked") != "true";
+            compactResults.attr("aria-checked", checked ? "true" : "false");
+            results.toggleClass("is-compact", checked);
+        });
         query.on("input", updateClearQueryButton);
         query.on("keydown", function(event) {
             if (event.key == "Enter") {
@@ -582,6 +804,9 @@
             error.empty().hide();
             results.empty();
             summary.text("Ready");
+            currentResults = [];
+            currentResultIndex = -1;
+            updateNavigation();
             query.trigger("focus");
         });
         includeConfig.input.on("change", function() {
@@ -599,6 +824,7 @@
         });
         refreshNodeTypes(false);
         updateClearQueryButton();
+        updateNavigation();
         return content;
     }
 
@@ -679,28 +905,13 @@
     padding: 12px;
 }
 
-.nr-advanced-search-heading {
-    margin-bottom: 11px;
-}
-
-.nr-advanced-search-heading-title {
-    font-size: 15px;
-    font-weight: 650;
-    letter-spacing: -0.01em;
-    line-height: 1.2;
-}
-
-.nr-advanced-search-heading-text {
-    font-size: 11px;
-    line-height: 1.35;
-    margin-top: 3px;
-    opacity: 0.68;
-}
-
 .nr-advanced-search-search-block {
+    align-items: stretch;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 7px;
+    max-width: none;
+    width: 100%;
 }
 
 .nr-advanced-search-query {
@@ -717,7 +928,10 @@
     outline: 0;
     padding: 0 9px;
     transition: border-color 0.12s ease, box-shadow 0.12s ease;
-    width: 100%;
+    align-self: stretch;
+    flex: 1 1 auto;
+    max-width: none !important;
+    width: 100% !important;
 }
 
 .nr-advanced-search-query:focus {
@@ -733,26 +947,27 @@
 .nr-advanced-search-search-actions {
     align-items: center;
     display: flex;
-    gap: 3px;
+    flex: 0 0 auto;
+    gap: 6px;
     justify-content: flex-start;
-    min-height: 30px;
+    min-height: 36px;
 }
 
 .nr-advanced-search-clear-query {
     align-items: center;
-    background: transparent;
-    border: 0;
+    background: var(--nr-as-panel);
+    border: 1px solid var(--nr-as-border);
     border-radius: 5px;
     color: inherit;
     cursor: pointer;
     display: inline-flex;
-    height: 30px;
+    height: 36px;
     justify-content: center;
     margin: 0;
-    opacity: 0.45;
+    opacity: 0.68;
     padding: 0;
     transition: background 0.12s ease, opacity 0.12s ease, transform 0.08s ease;
-    width: 30px;
+    width: 36px;
 }
 
 .nr-advanced-search-clear-query svg {
@@ -771,11 +986,18 @@
 
 .nr-advanced-search-clear-query:hover {
     background: var(--nr-as-hover);
+    border-color: var(--nr-as-accent);
     opacity: 1;
 }
 
 .nr-advanced-search-clear-query:active {
     transform: translateY(1px);
+}
+
+.nr-advanced-search-clear-query:focus-visible {
+    border-color: var(--nr-as-accent);
+    box-shadow: 0 0 0 1px var(--nr-as-accent);
+    outline: 0;
 }
 
 .nr-advanced-search-clear-query:disabled {
@@ -785,18 +1007,18 @@
 
 .nr-advanced-search-search-button {
     align-items: center;
-    background: transparent;
-    border: 0;
+    background: var(--nr-as-panel);
+    border: 1px solid var(--nr-as-accent);
     border-radius: 5px;
     color: var(--nr-as-accent);
     cursor: pointer;
     display: inline-flex;
-    height: 30px;
+    height: 36px;
     justify-content: center;
     margin: 0;
     padding: 0;
-    transition: background 0.12s ease, transform 0.08s ease;
-    width: 34px;
+    transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease;
+    width: 36px;
 }
 
 .nr-advanced-search-search-button svg {
@@ -816,6 +1038,7 @@
 
 .nr-advanced-search-search-button:hover {
     background: var(--nr-as-hover);
+    box-shadow: 0 0 0 1px var(--nr-as-accent);
 }
 
 .nr-advanced-search-search-button:active {
@@ -971,15 +1194,167 @@
 }
 
 .nr-advanced-search-status {
-    align-items: center;
+    align-items: stretch;
     border-bottom: 1px solid var(--nr-as-border);
     display: flex;
     flex: 0 0 auto;
-    font-size: 10px;
+    flex-direction: column;
+    font-size: 11px;
     gap: 6px;
-    min-height: 31px;
-    opacity: 0.76;
+    min-height: 54px;
+    opacity: 0.88;
     padding: 7px 12px;
+}
+
+.nr-advanced-search-status-text {
+    align-items: center;
+    display: flex;
+    font-size: 11.5px;
+    font-weight: 600;
+    gap: 6px;
+    min-height: 20px;
+    min-width: 0;
+    width: 100%;
+}
+
+.nr-advanced-search-status-text span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nr-advanced-search-status-tools {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    min-height: 24px;
+    width: 100%;
+}
+
+.nr-advanced-search-compact-toggle {
+    align-items: center !important;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex !important;
+    flex: 0 0 auto;
+    flex-direction: row !important;
+    font: inherit;
+    font-size: 12px;
+    height: 26px;
+    justify-content: flex-start;
+    line-height: 1;
+    margin: 0;
+    opacity: 0.82;
+    padding: 0;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.nr-advanced-search-compact-toggle:hover {
+    opacity: 1;
+}
+
+.nr-advanced-search-compact-toggle:focus-visible {
+    outline: 0;
+}
+
+.nr-advanced-search-compact-box {
+    align-self: center;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    box-sizing: border-box;
+    display: block;
+    flex: 0 0 15px;
+    height: 15px;
+    opacity: 0.72;
+    position: relative;
+    width: 15px;
+}
+
+.nr-advanced-search-compact-box::after {
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    content: "";
+    height: 8px;
+    left: 4px;
+    opacity: 0;
+    position: absolute;
+    top: 1px;
+    transform: rotate(45deg);
+    width: 4px;
+}
+
+.nr-advanced-search-compact-toggle[aria-checked="true"] .nr-advanced-search-compact-box {
+    background: var(--nr-as-accent);
+    border-color: var(--nr-as-accent);
+    opacity: 1;
+}
+
+.nr-advanced-search-compact-toggle[aria-checked="true"] .nr-advanced-search-compact-box::after {
+    opacity: 1;
+}
+
+.nr-advanced-search-compact-toggle:focus-visible .nr-advanced-search-compact-box {
+    box-shadow: 0 0 0 2px rgba(63, 127, 147, 0.28);
+}
+
+.nr-advanced-search-compact-text {
+    align-self: center;
+    display: block;
+    flex: 0 0 auto;
+    font-weight: 600;
+    line-height: 15px;
+    margin: 0 0 0 11px !important;
+    padding: 0;
+}
+
+.nr-advanced-search-navigation {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 3px;
+}
+
+.nr-advanced-search-nav-button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    height: 24px;
+    justify-content: center;
+    margin: 0;
+    opacity: 0.72;
+    padding: 0;
+    width: 24px;
+}
+
+.nr-advanced-search-nav-button:hover:not(:disabled) {
+    background: var(--nr-as-hover);
+    opacity: 1;
+}
+
+.nr-advanced-search-nav-button:focus-visible {
+    box-shadow: 0 0 0 2px var(--nr-as-accent);
+    outline: 0;
+}
+
+.nr-advanced-search-nav-button:disabled {
+    cursor: default;
+    opacity: 0.2;
+}
+
+.nr-advanced-search-result-position {
+    font-family: var(--red-ui-monospace-font, monospace);
+    min-width: 34px;
+    text-align: center;
+    white-space: nowrap;
 }
 
 .nr-advanced-search-error {
@@ -1026,7 +1401,47 @@
     max-width: 220px;
 }
 
+.nr-advanced-search-group-header {
+    align-items: center;
+    display: flex;
+    font-size: 11px;
+    font-weight: 650;
+    gap: 6px;
+    margin: 12px 2px 6px;
+    min-height: 20px;
+    opacity: 0.78;
+    padding: 0 2px;
+}
+
+.nr-advanced-search-group-header:first-child {
+    margin-top: 1px;
+}
+
+.nr-advanced-search-group-color {
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    border-radius: 3px;
+    display: inline-block;
+    flex: 0 0 11px;
+    height: 11px;
+    width: 11px;
+}
+
+.nr-advanced-search-group-type {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nr-advanced-search-group-count {
+    font-size: 10px;
+    font-weight: 500;
+    margin-left: auto;
+    opacity: 0.72;
+    white-space: nowrap;
+}
+
 .nr-advanced-search-result {
+    --nr-as-node-color: var(--nr-as-border);
     background: var(--red-ui-primary-background, transparent);
     border: 1px solid var(--nr-as-border);
     border-radius: 6px;
@@ -1036,9 +1451,26 @@
     transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
 }
 
+.nr-advanced-search-result.has-node-color {
+    border-left: 5px solid var(--nr-as-node-color);
+}
+
 .nr-advanced-search-result:hover {
     border-color: var(--nr-as-accent);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.nr-advanced-search-result.has-node-color:hover {
+    border-left-color: var(--nr-as-node-color);
+}
+
+.nr-advanced-search-result.is-active {
+    border-color: var(--nr-as-accent);
+    box-shadow: 0 0 0 1px var(--nr-as-accent), 0 3px 8px rgba(0, 0, 0, 0.10);
+}
+
+.nr-advanced-search-result.has-node-color.is-active {
+    border-left-color: var(--nr-as-node-color);
 }
 
 .nr-advanced-search-result-header {
@@ -1060,6 +1492,16 @@
     flex-wrap: wrap;
     gap: 5px;
     min-width: 0;
+}
+
+.nr-advanced-search-node-color {
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    display: inline-block;
+    flex: 0 0 auto;
+    height: 13px;
+    width: 13px;
 }
 
 .nr-advanced-search-result-title {
@@ -1103,9 +1545,10 @@
     align-items: center;
     display: flex;
     flex-wrap: wrap;
-    font-size: 9px;
-    gap: 5px;
-    margin-top: 4px;
+    font-size: 10.5px;
+    gap: 6px;
+    line-height: 1.35;
+    margin-top: 5px;
     opacity: 0.66;
     overflow-wrap: anywhere;
 }
@@ -1124,6 +1567,36 @@
 
 .nr-advanced-search-match-list {
     background: var(--red-ui-primary-background, transparent);
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-result {
+    margin-bottom: 6px;
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-result-header {
+    align-items: center;
+    padding: 6px 7px;
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-result-title-area {
+    flex: 1 1 auto;
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-result-title-row {
+    flex-wrap: nowrap;
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-result-title {
+    flex: 1 1 auto;
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-result-meta,
+.nr-advanced-search-results.is-compact .nr-advanced-search-match-list {
+    display: none;
+}
+
+.nr-advanced-search-results.is-compact .nr-advanced-search-reveal span {
+    display: none;
 }
 
 .nr-advanced-search-match {
@@ -1151,6 +1624,15 @@
 
 .nr-advanced-search-match-path .fa {
     font-size: 9px;
+}
+
+.nr-advanced-search-match-overflow {
+    border-top: 1px solid var(--nr-as-border);
+    font-size: 9px;
+    font-style: italic;
+    opacity: 0.66;
+    padding: 7px 9px;
+    text-align: center;
 }
 
 .nr-advanced-search-match-snippet {

@@ -1,6 +1,6 @@
 # Find+ for Node-RED
 
-**Find+** is an editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
+**Find+** is an experimental editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
 
 It was created for large flows where a basic text search is not enough — especially when a value such as `810` must be found as an exact number rather than as part of `1810` or `8100`.
 
@@ -16,6 +16,11 @@ It was created for large flows where a basic text search is not enough — espec
 - Optionally include configuration nodes.
 - Show the matching property and line number for multiline text.
 - Reveal a node without closing the Find+ sidebar.
+- Move through found nodes with previous/next navigation controls.
+- Collapse results to one compact row per found node while retaining the number of matching lines or properties.
+- Display each result with the colour declared by its Node-RED node type.
+- Group found nodes by node type so Function, link and other node results stay together.
+- Search code-like text containing punctuation and quoted values, such as `topic: "LACAR"`.
 - Light and dark theme support.
 
 ## Quick syntax
@@ -29,6 +34,7 @@ num:810
 type:function alarm
 flow:current alarm
 re:id\s*:\s*810
+topic: "LACAR"
 ```
 
 Prefixes can be combined:
@@ -37,13 +43,15 @@ Prefixes can be combined:
 type:function flow:current case:Echo
 ```
 
+Only the documented Find+ prefixes have special meaning. Other text is searched literally, so expressions such as `topic: "LACAR"` can be pasted directly from Function code.
+
 ## Installation from a release package
 
 Download the `.tgz` file from the GitHub Release and copy it to the machine running Node-RED.
 
 ```bash
 cd ~/.node-red
-npm install ~/Downloads/node-red-plugin-advanced-search-0.4.1.tgz
+npm install ~/Downloads/node-red-plugin-advanced-search-0.5.6.tgz
 ```
 
 Replace `~/Downloads/` with the directory where the file was downloaded.
