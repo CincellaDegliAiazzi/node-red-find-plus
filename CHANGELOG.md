@@ -2,13 +2,15 @@
 
 All notable changes to this project are documented here.
 
-## [0.4.0] - 2026-07-15
+## [0.4.0] - 2026-07-16
 
 ### Added
 
 - English user interface and documentation for the first GitHub-ready release.
 - GitHub issue templates and contribution guidance.
 - Package validation script.
+
+- Compatibility verified on Node-RED 4.1.11 and 5.0.1.
 
 ### Retained from 0.3.3
 
