@@ -99,7 +99,7 @@ The sidebar and editor action use Node-RED editor plug-in APIs. Reading the load
 
 ## Project status
 
-Find+ is experimental. It is being shared through GitHub first so the source, releases and issue history remain visible before considering publication through npm or the Node-RED Flow Library.
+Find+ is being shared through GitHub first so the source, releases and issue history remain visible before considering publication through npm or the Node-RED Flow Library.
 
 ## Privacy and runtime impact
 
