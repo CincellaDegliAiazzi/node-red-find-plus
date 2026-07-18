@@ -1,6 +1,6 @@
 # Find+ for Node-RED
 
-**Find+** is an experimental editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
+**Find+** is an editor plug-in that adds an independent advanced search sidebar to Node-RED. It does not replace or modify the built-in search.
 
 It was created for large Node-RED projects, where the built-in search can make it difficult to isolate specific values across many flows, node properties and thousands of lines of Function code. Find+ provides more precise search modes and clearer result navigation, making relevant matches easier to identify.
 
@@ -100,7 +100,7 @@ The sidebar and editor action use Node-RED editor plug-in APIs. Reading the load
 
 ## Project status
 
-Find+ is experimental. It is being shared through GitHub first so the source, releases and issue history remain visible before considering publication through npm or the Node-RED Flow Library.
+Find+ is being shared through GitHub first so the source, releases and issue history remain visible before considering publication through npm or the Node-RED Flow Library.
 
 ## Privacy and runtime impact
 
