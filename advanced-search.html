@@ -633,8 +633,8 @@
         const clearQueryButton = $("<button>", {
             class: "nr-advanced-search-clear-query",
             type: "button",
-            title: "Clear query",
-            "aria-label": "Clear query"
+            title: "Clear query and results",
+            "aria-label": "Clear query and results"
         }).appendTo(searchActions);
         clearQueryButton.html(
             '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
@@ -642,13 +642,21 @@
             '</svg>'
         );
 
-        const sectionHeader = $("<div>", { class: "nr-advanced-search-section-header" }).appendTo(controls);
-        $("<span>", { text: "Filters" }).appendTo(sectionHeader);
-        const clearButton = $("<button>", {
+        $("<span>", {
+            class: "nr-advanced-search-actions-spacer",
+            "aria-hidden": "true"
+        }).appendTo(searchActions);
+
+        const resetButton = $("<button>", {
             class: "nr-advanced-search-reset",
             type: "button",
-            text: "Reset"
-        }).appendTo(sectionHeader);
+            text: "RESET",
+            title: "Reset Find+",
+            "aria-label": "Reset Find+"
+        }).appendTo(searchActions);
+
+        const sectionHeader = $("<div>", { class: "nr-advanced-search-section-header" }).appendTo(controls);
+        $("<span>", { text: "Filters" }).appendTo(sectionHeader);
 
         const filters = $("<div>", { class: "nr-advanced-search-filters" }).appendTo(controls);
         const caseSensitive = createCheckbox("Case sensitive", false, "Match letter case");
@@ -740,7 +748,7 @@
             content: content,
             query: query,
             searchButton: searchButton,
-            clearButton: clearButton,
+            resetButton: resetButton,
             clearQueryButton: clearQueryButton,
             caseSensitive: caseSensitive.input,
             wholeWord: wholeWord.input,
@@ -759,7 +767,16 @@
         };
 
         function updateClearQueryButton() {
-            clearQueryButton.prop("disabled", query.val().length == 0);
+            clearQueryButton.prop("disabled", query.val().length == 0 && currentResults.length == 0);
+        }
+
+        function clearDisplayedResults() {
+            error.empty().hide();
+            results.empty();
+            summary.text("Ready");
+            currentResults = [];
+            currentResultIndex = -1;
+            updateNavigation();
         }
 
         searchButton.on("click", performSearch);
@@ -787,12 +804,12 @@
         });
         clearQueryButton.on("click", function() {
             query.val("");
+            clearDisplayedResults();
             updateClearQueryButton();
             query.trigger("focus");
         });
-        clearButton.on("click", function() {
+        resetButton.on("click", function() {
             query.val("");
-            updateClearQueryButton();
             caseSensitive.input.prop("checked", false);
             wholeWord.input.prop("checked", false);
             regex.input.prop("checked", false);
@@ -801,12 +818,10 @@
             includeConfig.input.prop("checked", false);
             refreshNodeTypes(false);
             nodeType.val("");
-            error.empty().hide();
-            results.empty();
-            summary.text("Ready");
-            currentResults = [];
-            currentResultIndex = -1;
-            updateNavigation();
+            compactResults.attr("aria-checked", "false");
+            results.removeClass("is-compact");
+            clearDisplayedResults();
+            updateClearQueryButton();
             query.trigger("focus");
         });
         includeConfig.input.on("change", function() {
@@ -951,6 +966,12 @@
     gap: 6px;
     justify-content: flex-start;
     min-height: 36px;
+    width: 100%;
+}
+
+.nr-advanced-search-actions-spacer {
+    flex: 1 1 auto;
+    min-width: 8px;
 }
 
 .nr-advanced-search-clear-query {
@@ -1062,18 +1083,36 @@
 }
 
 .nr-advanced-search-reset {
-    background: transparent;
-    border: 0;
+    align-items: center;
+    background: var(--nr-as-panel);
+    border: 1px solid var(--nr-as-border);
+    border-radius: 5px;
+    color: inherit;
     cursor: pointer;
+    display: inline-flex;
     font-size: 10px;
-    opacity: 0.6;
-    padding: 2px 0;
-    text-transform: none;
+    font-weight: 650;
+    height: 36px;
+    justify-content: center;
+    letter-spacing: 0.04em;
+    margin: 0;
+    padding: 0 10px;
+    transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease;
 }
 
 .nr-advanced-search-reset:hover {
-    opacity: 1;
-    text-decoration: underline;
+    background: var(--nr-as-hover);
+    border-color: var(--nr-as-accent);
+}
+
+.nr-advanced-search-reset:active {
+    transform: translateY(1px);
+}
+
+.nr-advanced-search-reset:focus-visible {
+    border-color: var(--nr-as-accent);
+    box-shadow: 0 0 0 1px var(--nr-as-accent);
+    outline: 0;
 }
 
 .nr-advanced-search-filters {

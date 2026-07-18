@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.7] - 2026-07-18
+
+### Changed
+
+- Moved the global RESET control from the Filters heading to the right side of the main search-actions row.
+- The X button now clears the query and all displayed results while preserving filters and Compact mode.
+- RESET now restores the complete initial Find+ state, including filters, Compact mode, results and navigation.
+
 ## [0.5.6] - 2026-07-16
 
 ### Fixed
