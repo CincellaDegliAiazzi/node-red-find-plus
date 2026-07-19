@@ -1,6 +1,6 @@
 {
   "name": "node-red-plugin-advanced-search",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Find+ advanced search with grouped results, compact mode and result navigation for the Node-RED editor",
   "keywords": [
     "node-red",

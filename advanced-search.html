@@ -23,7 +23,10 @@
     }
 
     function tokenize(value) {
-        return value.match(/(?:[^\s"]+:"(?:\\.|[^"])*"|"(?:\\.|[^"])*"|\S+)/g) || [];
+        // Keep punctuation immediately following a quoted string attached to the
+        // same token. Otherwise code such as `id: "away", value: 0` would be
+        // rebuilt with an artificial space before the comma and fail to match.
+        return value.match(/(?:[^\s"]+:"(?:\\.|[^"])*"[^\s]*|"(?:\\.|[^"])*"[^\s]*|\S+)/g) || [];
     }
 
     function parseQuery(rawQuery) {

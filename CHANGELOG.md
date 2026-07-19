@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.8] - 2026-07-19
+
+### Fixed
+
+- Preserved punctuation immediately following quoted text in literal code searches. Queries such as `id: "away", value: 0` now match the original Function code instead of being rebuilt with an incorrect space before the comma.
+
 ## [0.5.7] - 2026-07-18
 
 ### Changed
